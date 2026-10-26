@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Runs whenever an orb starts or wakes. Keep this fast and idempotent.
+set -euo pipefail
+
+# Make sure the local MySQL server from .agents/setup is running.
+sudo systemctl start mysql
+sudo mysqladmin --wait=5 --connect-timeout=2 ping >/dev/null
