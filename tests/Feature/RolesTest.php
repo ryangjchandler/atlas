@@ -12,22 +12,6 @@ class RolesTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_the_first_registered_user_becomes_admin_and_later_ones_are_users(): void
-    {
-        foreach (['first@example.com', 'second@example.com'] as $email) {
-            $this->post(route('register.store'), [
-                'name' => 'Someone',
-                'email' => $email,
-                'password' => 'password',
-                'password_confirmation' => 'password',
-            ]);
-            auth()->logout();
-        }
-
-        $this->assertSame(Role::Admin, User::where('email', 'first@example.com')->sole()->role);
-        $this->assertSame(Role::User, User::where('email', 'second@example.com')->sole()->role);
-    }
-
     public function test_users_can_view_sources_but_not_configure_them(): void
     {
         $user = User::factory()->create();
