@@ -17,12 +17,14 @@ step() {
 PHP_VERSION=8.4
 PHP_PACKAGES=(
   "php$PHP_VERSION-cli" "php$PHP_VERSION-bcmath" "php$PHP_VERSION-curl"
-  "php$PHP_VERSION-intl" "php$PHP_VERSION-mbstring" "php$PHP_VERSION-mysql"
+  "php$PHP_VERSION-intl" "php$PHP_VERSION-mbstring" "php$PHP_VERSION-pgsql"
   "php$PHP_VERSION-sqlite3" "php$PHP_VERSION-xml" "php$PHP_VERSION-zip"
 )
 
 # Local-only development database; the server listens on localhost only.
+PG_VERSION=17
 DB_DATABASE=laravel
+DB_TEST_DATABASE=laravel_testing
 DB_USERNAME=laravel
 DB_PASSWORD=password
 
@@ -67,39 +69,50 @@ install_composer() {
   rm -rf "$tmp"
 }
 
-install_mysql() {
-  if ! dpkg-query -W -f='${Status}' mysql-server 2>/dev/null | grep -q 'install ok installed'; then
-    # Debian 12's default-mysql-server is MariaDB; use Oracle's repository for MySQL 8.4 LTS.
-    if [ ! -f /etc/apt/sources.list.d/mysql.list ]; then
-      curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 |
-        sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/mysql.gpg
-      echo "deb [signed-by=/usr/share/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian bookworm mysql-8.4-lts" |
-        sudo tee /etc/apt/sources.list.d/mysql.list >/dev/null
+install_postgres() {
+  local packages=("postgresql-$PG_VERSION" "postgresql-$PG_VERSION-pgvector")
+  local missing=()
+  for pkg in "${packages[@]}"; do
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing+=("$pkg")
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    # Debian 12 ships Postgres 15 with an old pgvector (no HNSW); use the PGDG repository to match Neon.
+    if [ ! -f /etc/apt/sources.list.d/pgdg.list ]; then
+      curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc |
+        sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/postgresql.gpg
+      echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" |
+        sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
     fi
     sudo apt-get update -q
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q mysql-server
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${missing[@]}"
   fi
 
   # Disposable orb database: favour speed over durability.
-  local cnf=/etc/mysql/conf.d/zz-orb.cnf
-  local wanted='[mysqld]
-bind-address = 127.0.0.1
-skip-log-bin
-innodb_flush_log_at_trx_commit = 0
-innodb_doublewrite = 0
-sync_binlog = 0'
-  if [ "$(cat "$cnf" 2>/dev/null)" != "$wanted" ]; then
-    echo "$wanted" | sudo tee "$cnf" >/dev/null
-    sudo systemctl restart mysql
+  local conf="/etc/postgresql/$PG_VERSION/main/conf.d/zz-orb.conf"
+  local wanted="listen_addresses = 'localhost'
+fsync = off
+synchronous_commit = off
+full_page_writes = off"
+  sudo systemctl enable --now postgresql
+  if [ "$(sudo cat "$conf" 2>/dev/null)" != "$wanted" ]; then
+    echo "$wanted" | sudo tee "$conf" >/dev/null
+    sudo systemctl restart postgresql
   fi
-  sudo systemctl enable --now mysql
+  sudo -u postgres pg_isready -q -t 30
 
-  sudo mysql <<SQL
-CREATE DATABASE IF NOT EXISTS \`$DB_DATABASE\`;
-CREATE USER IF NOT EXISTS '$DB_USERNAME'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
-CREATE USER IF NOT EXISTS '$DB_USERNAME'@'127.0.0.1' IDENTIFIED BY '$DB_PASSWORD';
-GRANT ALL PRIVILEGES ON \`$DB_DATABASE\`.* TO '$DB_USERNAME'@'localhost', '$DB_USERNAME'@'127.0.0.1';
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -q <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$DB_USERNAME') THEN
+    CREATE ROLE $DB_USERNAME LOGIN PASSWORD '$DB_PASSWORD';
+  END IF;
+END \$\$;
 SQL
+  local db
+  for db in "$DB_DATABASE" "$DB_TEST_DATABASE"; do
+    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname = '$db'" | grep -q 1 ||
+      sudo -u postgres createdb -O "$DB_USERNAME" "$db"
+    sudo -u postgres psql -q -d "$db" -c 'SET client_min_messages = warning' -c 'CREATE EXTENSION IF NOT EXISTS vector'
+  done
 }
 
 # Set KEY=value in .env, replacing an existing or commented-out entry.
@@ -114,9 +127,9 @@ set_env() {
 prepare_env() {
   [ -f .env ] || cp -- .env.example .env
   grep -q '^APP_KEY=base64:' .env || php artisan key:generate --ansi --no-interaction
-  set_env DB_CONNECTION mysql
+  set_env DB_CONNECTION pgsql
   set_env DB_HOST 127.0.0.1
-  set_env DB_PORT 3306
+  set_env DB_PORT 5432
   set_env DB_DATABASE "$DB_DATABASE"
   set_env DB_USERNAME "$DB_USERNAME"
   set_env DB_PASSWORD "$DB_PASSWORD"
@@ -124,7 +137,7 @@ prepare_env() {
 }
 
 step "Install PHP $PHP_VERSION" install_php
-step "Install MySQL" install_mysql
+step "Install Postgres $PG_VERSION with pgvector" install_postgres
 step "Install Composer" install_composer
 step "composer install" composer install --no-interaction --no-progress --prefer-dist
 step "npm ci" npm ci --no-audit --no-fund

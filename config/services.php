@@ -18,6 +18,18 @@ return [
         'key' => env('POSTMARK_API_KEY'),
     ],
 
+    'github' => [
+        // How Atlas reads GitHub: "token" (a personal access token) or "app" (a GitHub App).
+        'driver' => env('GITHUB_DRIVER', 'token'),
+        // A fine-grained or classic access token with read access to contents, issues, pull requests and metadata.
+        'token' => env('GITHUB_TOKEN'),
+        // The GitHub App used by the "app" driver. Make it private to your organisation.
+        'app_id' => env('GITHUB_APP_ID'),
+        'app_slug' => env('GITHUB_APP_SLUG'),
+        // The app's PEM private key; literal "\n" sequences are accepted for single-line environments.
+        'private_key' => env('GITHUB_APP_PRIVATE_KEY'),
+    ],
+
     'resend' => [
         'key' => env('RESEND_API_KEY'),
     ],
