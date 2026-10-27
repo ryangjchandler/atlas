@@ -41,6 +41,10 @@ class HandleInertiaRequests extends Middleware
             'auth' => [
                 'user' => $request->user(),
             ],
+            'conversations' => fn () => $request->user()?->conversations()
+                ->latest('updated_at')
+                ->limit(50)
+                ->get(['id', 'title', 'updated_at']) ?? [],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];
     }
